@@ -1,0 +1,15 @@
+name: Herobrine
+version: '${version}'
+main: nl.meneertjes.herobrine.HerobrinePlugin
+api-version: '26.3'
+description: Herobrine appears in the distance and vanishes when you look at him or get close. A harmless prank.
+author: MezzoSplash
+website: https://github.com/MezzoSplash/Herobrine
+commands:
+  herobrine:
+    description: Herobrine admin
+    usage: /herobrine <spawn <player>|reload|toggle|status|clear>
+    permission: herobrine.admin
+permissions:
+  herobrine.admin:
+    default: op

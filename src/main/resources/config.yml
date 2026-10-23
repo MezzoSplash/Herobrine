@@ -1,11 +1,12 @@
-# Herobrine prank. Only the targeted player sees him. No block changes, no damage.
+# Herobrine prank. Only the targeted player sees him. No damage.
+# No block changes either, unless you turn on traces (off by default, see below).
 enabled: true
 # How often (seconds) every eligible player gets a roll.
 check-interval-seconds: 600
 # Chance per roll (0.0 to 1.0).
 chance: 0.05
 # Chance is multiplied by this at night or when the player is in a dark/cave spot (sky light < 4). 1.0 = no preference.
-night-or-cave-multiplier: 2.0
+night-or-cave-multiplier: 1.0
 # If true, Herobrine only appears at night or in caves.
 only-night-or-cave: false
 # Minimum seconds between two apparitions for the same player.
@@ -32,3 +33,57 @@ skin-value: 'ewogICJ0aW1lc3RhbXAiIDogMTc5MjU4NjM3MjE4NCwKICAicHJvZmlsZUlkIiA6ICJ
 skin-signature: 'iLwJWn3eDGvX5c8h4QxwPsj3V9H5+Ngf9mhYFo4i3x9YBLzO/dV69XIGtQP0ZBPGgzvr48isa5fx1SPnkDGisfLUrAm5qfml86zgKVwH9oVqgfR5V/akF5tYXQvDYjbPdOUsI3/Dq4wsNe7r5F9/WxyciR0RzzJRWEEa3vENuRErKRoYxvD8SCuiK005h55V3d5vepodsE31vSsrYz3R3Sk0xQFRhcNv1iePK1JvVbRr7S8Aekvk1D6l4qNZfwMHeKsc3b9Rhr1QPiX12oHRPMh7Rgp1Do74NDi0S9oHY+eTrvx8w2b5fd+iS3YfAolUEhIY8+c5q170+Ow+w/wvIOrsEd1LC4zMFL8xHznyzNQrcRYr1iMy7e/gCA9HGh710u+wq/ocZ+93Jv2+Ev6ChCBEHudpFhXgY3rutQTOZmRRJQZ4YKUGnlOGlmdNkcFLKzpbojUrNhecuyxJnOM+YEb3hOOIdJ525HW9xkp8IxmNvCKE6vK56zaVqwNnVSEN6go+PUb7Qx4wpYr0YbSWyodrN+ZPdiJ2/xHHZ2Ot+WCNvc+zBys4//wUqqWMTGKy2+6GL1krz2N5/Mwpi5EaNBZoJ3R6//5qXKi6QmfwactH3kFe0TUh3qpdDTPmyNI4e6K35SFwq7zwK8qOnrZ/ogbP85FgsJsEPl/ZDVkdCyk='
 # Log every roll to the console (for testing).
 debug: false
+
+# ---------- v1.1 ----------
+# Spooky sounds, only heard by one player. Each roll (check-interval-seconds) every player
+# gets an extra roll with sounds.chance for one random enabled sound.
+sounds:
+  enabled: true
+  chance: 0.05
+  footsteps: true      # footsteps sneaking up behind the player
+  door: true           # a wooden door opening and closing behind them
+  cave: true           # the vanilla cave ambience sound
+  fake-join: true      # "Herobrine joined the game" in their chat only
+  fake-join-name: Herobrine
+  fake-leave-after-seconds: 3   # 0 = no "left the game" message
+
+# Halloween mode: between these dates (MM-DD, inclusive) every chance (apparitions, sounds, traces)
+# is multiplied. Ranges over new year (e.g. 12-20 to 01-05) work too.
+halloween:
+  enabled: true
+  start: "10-25"
+  end: "11-01"
+  chance-multiplier: 2.0
+  timezone: ""         # e.g. Europe/Amsterdam, empty = server timezone
+
+# /herobrine event [start [minutes]|stop|status]: an event night with extra rolls.
+event:
+  duration-minutes: 60
+  check-interval-seconds: 60
+  chance-multiplier: 5.0      # on top of the halloween multiplier
+  player-cooldown-seconds: 180
+  start-message: ""           # broadcast to everyone (not opted out) at the start, empty = silent
+  set-night: false            # set overworld time to night at the start
+  thunder: false              # start a thunderstorm for the duration
+
+# World traces CHANGE BLOCKS in the world. Off by default.
+# Every trace is logged (console + plugins/Herobrine/traces.log) and can be undone exactly
+# with /herobrine traces undo <id> or undoall (original blocks are stored in traces.yml).
+traces:
+  enabled: false
+  chance: 0.02                # per player per roll
+  min-minutes-between: 60     # global gap between two traces
+  max-active: 10              # stop placing when this many traces exist (undo to free up)
+  tunnels: true               # 2x2 tunnel, 16 long, a few blocks under the surface
+  leafless-trees: true        # strips the natural leaves off a tree
+  sand-pyramids: true         # small 5x5 sand pyramid
+  torch-messages: true        # torches on the ground spelling torch-message (A to Z and spaces)
+  torch-message: "RUN"
+  # Safety: where a trace may go.
+  min-distance: 48            # from the targeted player
+  max-distance: 96
+  min-distance-from-players: 32   # from every online player
+  min-distance-from-spawn: 200
+  protection-radius: 16       # no player-block-types within this radius (and 24 blocks up/down)
+  max-chunk-inhabited-minutes: 60  # skip chunks where players spent more time (bases)
+  player-block-types: [CRAFTING_TABLE, CHEST, TRAPPED_CHEST, BARREL, FURNACE, BLAST_FURNACE, SMOKER, ENCHANTING_TABLE, ANVIL, BREWING_STAND, RED_BED, WHITE_BED, BLACK_BED, BLUE_BED, BROWN_BED, CYAN_BED, GRAY_BED, GREEN_BED, LIGHT_BLUE_BED, LIGHT_GRAY_BED, LIME_BED, MAGENTA_BED, ORANGE_BED, PINK_BED, PURPLE_BED, YELLOW_BED, TORCH, WALL_TORCH, LANTERN, GLASS, GLASS_PANE, OAK_PLANKS, SPRUCE_PLANKS, BIRCH_PLANKS, JUNGLE_PLANKS, ACACIA_PLANKS, DARK_OAK_PLANKS, MANGROVE_PLANKS, CHERRY_PLANKS, PALE_OAK_PLANKS, BAMBOO_PLANKS, CRIMSON_PLANKS, WARPED_PLANKS, COBBLESTONE, STONE_BRICKS, BRICKS, OAK_DOOR, SPRUCE_DOOR, IRON_DOOR, OAK_FENCE, SPRUCE_FENCE, FARMLAND, RAIL, POWERED_RAIL, REDSTONE_WIRE, HOPPER, SHULKER_BOX, WHITE_WOOL, OAK_SIGN, OAK_WALL_SIGN, BOOKSHELF, LADDER, SCAFFOLDING]

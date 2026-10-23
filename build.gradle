@@ -1,6 +1,6 @@
 plugins { id 'java' }
 group = 'nl.meneertjes'
-version = '1.0.0'
+version = '1.1.0'
 repositories { mavenCentral(); maven { url = 'https://repo.papermc.io/repository/maven-public/' } }
 dependencies { compileOnly 'io.papermc.paper:paper-api:26.3.build.181-stable' }
 java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }

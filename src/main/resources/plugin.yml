@@ -8,8 +8,10 @@ website: https://github.com/MezzoSplash/Herobrine
 commands:
   herobrine:
     description: Herobrine admin
-    usage: /herobrine <spawn <player>|reload|toggle|status|clear>
-    permission: herobrine.admin
+    usage: /herobrine <spawn|spawnat|reload|toggle|status|clear|sound|event|traces|optout>
 permissions:
   herobrine.admin:
     default: op
+  herobrine.optout:
+    description: Use /herobrine optout
+    default: true

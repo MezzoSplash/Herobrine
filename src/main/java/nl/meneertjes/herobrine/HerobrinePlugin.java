@@ -18,6 +18,14 @@ import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.RayTraceResult;
 import org.bukkit.util.Vector;
 
+import org.bukkit.configuration.file.YamlConfiguration;
+import net.kyori.adventure.text.format.NamedTextColor;
+
+import java.io.File;
+import java.io.IOException;
+import java.time.LocalDate;
+import java.time.MonthDay;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -33,6 +41,13 @@ public final class HerobrinePlugin extends JavaPlugin implements Listener, TabEx
     private final Map<UUID, Long> lastSeen = new HashMap<>();
     private BukkitTask rollTask, tickTask;
     private ResolvableProfile profile;
+    private Traces traces;
+    private final Set<UUID> optedOut = new HashSet<>();
+    private File optoutFile;
+    private BukkitTask eventTask, eventEndTask;
+    private long eventEndsAt = 0;
+
+    void debug(String m) { if (getConfig().getBoolean("debug", false)) getLogger().info(m); }
 
     @Override public void onEnable() {
         key = new NamespacedKey(this, "apparition");
@@ -40,11 +55,15 @@ public final class HerobrinePlugin extends JavaPlugin implements Listener, TabEx
         Objects.requireNonNull(getCommand("herobrine")).setExecutor(this);
         getServer().getPluginManager().registerEvents(this, this);
         cleanupStray();
+        traces = new Traces(this);
+        optoutFile = new File(getDataFolder(), "optout.yml");
+        for (String u : YamlConfiguration.loadConfiguration(optoutFile).getStringList("opted-out")) try { optedOut.add(UUID.fromString(u)); } catch (IllegalArgumentException ignored) {}
         loadSettings();
         tickTask = Bukkit.getScheduler().runTaskTimer(this, this::tick, 20L, 2L);
     }
 
     @Override public void onDisable() {
+        stopEvent(false);
         for (Apparition a : new ArrayList<>(active.values())) remove(a, false);
         active.clear();
     }
@@ -62,8 +81,8 @@ public final class HerobrinePlugin extends JavaPlugin implements Listener, TabEx
             profile = ResolvableProfile.resolvableProfile(p);
         } else profile = null;
         if (rollTask != null) rollTask.cancel();
-        long period = Math.max(20L, getConfig().getLong("check-interval-seconds", 300) * 20L);
-        rollTask = Bukkit.getScheduler().runTaskTimer(this, this::roll, period, period);
+        long period = Math.max(20L, getConfig().getLong("check-interval-seconds", 600) * 20L);
+        rollTask = Bukkit.getScheduler().runTaskTimer(this, () -> roll(false), period, period);
     }
 
     private void cleanupStray() {
@@ -73,13 +92,44 @@ public final class HerobrinePlugin extends JavaPlugin implements Listener, TabEx
 
     private boolean eligible(Player p) {
         if (p.getGameMode() != GameMode.SURVIVAL || p.isDead()) return false;
+        if (optedOut.contains(p.getUniqueId())) return false;
         if (active.containsKey(p.getUniqueId())) return false;
         List<String> worlds = getConfig().getStringList("worlds");
         if (!worlds.isEmpty() && !worlds.contains(p.getWorld().getName())) return false;
         for (String ex : getConfig().getStringList("excluded-players")) if (ex.equalsIgnoreCase(p.getName())) return false;
-        long cd = getConfig().getLong("player-cooldown-seconds", 900) * 1000L;
+        long cd = (eventActive() ? getConfig().getLong("event.player-cooldown-seconds", 180) : getConfig().getLong("player-cooldown-seconds", 900)) * 1000L;
         Long last = lastSeen.get(p.getUniqueId());
         return last == null || System.currentTimeMillis() - last >= cd;
+    }
+
+    private boolean eligibleExtras(Player p) {
+        if (p.getGameMode() != GameMode.SURVIVAL || p.isDead() || optedOut.contains(p.getUniqueId())) return false;
+        List<String> worlds = getConfig().getStringList("worlds");
+        if (!worlds.isEmpty() && !worlds.contains(p.getWorld().getName())) return false;
+        for (String ex : getConfig().getStringList("excluded-players")) if (ex.equalsIgnoreCase(p.getName())) return false;
+        return true;
+    }
+
+    boolean halloween() {
+        if (!getConfig().getBoolean("halloween.enabled", true)) return false;
+        try {
+            String tz = getConfig().getString("halloween.timezone", "");
+            LocalDate now = LocalDate.now(tz == null || tz.isBlank() ? ZoneId.systemDefault() : ZoneId.of(tz));
+            MonthDay d = MonthDay.from(now);
+            MonthDay a = MonthDay.parse("--" + getConfig().getString("halloween.start", "10-25"));
+            MonthDay b = MonthDay.parse("--" + getConfig().getString("halloween.end", "11-01"));
+            return a.isAfter(b) ? (!d.isBefore(a) || !d.isAfter(b)) : (!d.isBefore(a) && !d.isAfter(b));
+        } catch (Exception e) { getLogger().warning("Bad halloween date config: " + e.getMessage()); return false; }
+    }
+
+    boolean eventActive() { return eventEndsAt > System.currentTimeMillis(); }
+
+    /** Combined multiplier from Halloween mode and the event night. */
+    double globalMultiplier() {
+        double m = 1.0;
+        if (halloween()) m *= getConfig().getDouble("halloween.chance-multiplier", 2.0);
+        if (eventActive()) m *= getConfig().getDouble("event.chance-multiplier", 5.0);
+        return m;
     }
 
     private boolean nightOrCave(Player p) {
@@ -88,14 +138,23 @@ public final class HerobrinePlugin extends JavaPlugin implements Listener, TabEx
         return night || p.getEyeLocation().getBlock().getLightFromSky() < 4;
     }
 
-    private void roll() {
-        if (getConfig().getBoolean("debug", false)) getLogger().info("roll: enabled=" + getConfig().getBoolean("enabled", true) + " players=" + Bukkit.getOnlinePlayers().size());
+    private void roll(boolean eventRoll) {
+        if (getConfig().getBoolean("debug", false)) getLogger().info("roll" + (eventRoll ? "(event)" : "") + ": enabled=" + getConfig().getBoolean("enabled", true) + " players=" + Bukkit.getOnlinePlayers().size());
         if (!getConfig().getBoolean("enabled", true)) return;
         for (Player p : Bukkit.getOnlinePlayers()) {
+            double gm = globalMultiplier();
+            if (eligibleExtras(p)) {
+                if (getConfig().getBoolean("sounds.enabled", true) && ThreadLocalRandom.current().nextDouble() < getConfig().getDouble("sounds.chance", 0.05) * gm)
+                    playSound(p, null);
+                if (getConfig().getBoolean("traces.enabled", false) && ThreadLocalRandom.current().nextDouble() < getConfig().getDouble("traces.chance", 0.02) * gm) {
+                    String err = traces.tryPlace(p, null);
+                    if (err != null) debug("trace for " + p.getName() + " failed: " + err);
+                }
+            }
             if (!eligible(p)) continue;
             boolean dark = nightOrCave(p);
             if (getConfig().getBoolean("only-night-or-cave", false) && !dark) continue;
-            double c = getConfig().getDouble("chance", 0.1) * (dark ? getConfig().getDouble("night-or-cave-multiplier", 2.0) : 1.0);
+            double c = getConfig().getDouble("chance", 0.05) * gm * (dark ? getConfig().getDouble("night-or-cave-multiplier", 1.0) : 1.0);
             if (ThreadLocalRandom.current().nextDouble() < c) {
                 String err = spawnFor(p);
                 if (err != null) getLogger().fine("Roll for " + p.getName() + " failed: " + err);
@@ -220,6 +279,72 @@ public final class HerobrinePlugin extends JavaPlugin implements Listener, TabEx
         if (m.isValid()) m.remove();
     }
 
+    static final List<String> SOUND_TYPES = List.of("footsteps", "door", "cave", "fake-join");
+
+    /** Play a random enabled sound effect (or the given one) for this player only. @return null or error. */
+    String playSound(Player p, String forced) {
+        List<String> on = new ArrayList<>();
+        if (forced != null) { if (!SOUND_TYPES.contains(forced)) return "unknown sound " + forced; on.add(forced); }
+        else for (String t : SOUND_TYPES) if (getConfig().getBoolean("sounds." + t, true)) on.add(t);
+        if (on.isEmpty()) return "no sound types enabled";
+        String t = on.get(ThreadLocalRandom.current().nextInt(on.size()));
+        Location behind = p.getLocation().subtract(p.getLocation().getDirection().setY(0).normalize().multiply(3));
+        switch (t) {
+            case "footsteps" -> {
+                Sound step = p.getLocation().getBlock().getRelative(0, -1, 0).getBlockSoundGroup().getStepSound();
+                for (int i = 0; i < 5; i++) {
+                    int n = i;
+                    Bukkit.getScheduler().runTaskLater(this, () -> {
+                        if (!p.isOnline()) return;
+                        Location l = p.getLocation().subtract(p.getLocation().getDirection().setY(0).normalize().multiply(4 - n * 0.3));
+                        p.playSound(l, step, SoundCategory.PLAYERS, 0.6f, 1.0f);
+                    }, i * 7L);
+                }
+            }
+            case "door" -> {
+                p.playSound(behind, Sound.BLOCK_WOODEN_DOOR_OPEN, SoundCategory.BLOCKS, 0.8f, 1.0f);
+                Bukkit.getScheduler().runTaskLater(this, () -> { if (p.isOnline()) p.playSound(behind, Sound.BLOCK_WOODEN_DOOR_CLOSE, SoundCategory.BLOCKS, 0.8f, 1.0f); }, 30L);
+            }
+            case "cave" -> p.playSound(behind, Sound.AMBIENT_CAVE, SoundCategory.AMBIENT, 1.0f, 1.0f);
+            case "fake-join" -> {
+                String name = getConfig().getString("sounds.fake-join-name", "Herobrine");
+                p.sendMessage(Component.translatable("multiplayer.player.joined", Component.text(name)).color(NamedTextColor.YELLOW));
+                long leave = getConfig().getLong("sounds.fake-leave-after-seconds", 3);
+                if (leave > 0) Bukkit.getScheduler().runTaskLater(this, () -> { if (p.isOnline())
+                    p.sendMessage(Component.translatable("multiplayer.player.left", Component.text(name)).color(NamedTextColor.YELLOW)); }, leave * 20L);
+            }
+        }
+        getLogger().info("Herobrine " + t + " for " + p.getName());
+        return null;
+    }
+
+    void startEvent(int minutes) {
+        stopEvent(false);
+        eventEndsAt = System.currentTimeMillis() + minutes * 60_000L;
+        long period = Math.max(20L, getConfig().getLong("event.check-interval-seconds", 60) * 20L);
+        eventTask = Bukkit.getScheduler().runTaskTimer(this, () -> roll(true), 40L, period);
+        eventEndTask = Bukkit.getScheduler().runTaskLater(this, () -> stopEvent(true), minutes * 1200L);
+        String msg = getConfig().getString("event.start-message", "");
+        if (msg != null && !msg.isBlank()) for (Player p : Bukkit.getOnlinePlayers()) if (!optedOut.contains(p.getUniqueId())) p.sendMessage(Component.text(msg, NamedTextColor.DARK_RED));
+        if (getConfig().getBoolean("event.set-night", false)) for (World w : Bukkit.getWorlds()) if (w.getEnvironment() == World.Environment.NORMAL) w.setTime(14000);
+        if (getConfig().getBoolean("event.thunder", false)) for (World w : Bukkit.getWorlds()) if (w.getEnvironment() == World.Environment.NORMAL) { w.setStorm(true); w.setThundering(true); w.setThunderDuration(minutes * 1200); }
+        getLogger().info("Herobrine event started for " + minutes + " minutes");
+    }
+
+    void stopEvent(boolean log) {
+        boolean was = eventActive();
+        eventEndsAt = 0;
+        if (eventTask != null) { eventTask.cancel(); eventTask = null; }
+        if (eventEndTask != null) { eventEndTask.cancel(); eventEndTask = null; }
+        if (log && was) getLogger().info("Herobrine event ended");
+    }
+
+    private void saveOptout() {
+        YamlConfiguration y = new YamlConfiguration();
+        y.set("opted-out", optedOut.stream().map(UUID::toString).toList());
+        try { getDataFolder().mkdirs(); y.save(optoutFile); } catch (IOException e) { getLogger().severe("Cannot save optout.yml: " + e.getMessage()); }
+    }
+
     @EventHandler public void onQuit(PlayerQuitEvent e) {
         Apparition a = active.get(e.getPlayer().getUniqueId());
         if (a != null) remove(a, false);
@@ -231,8 +356,19 @@ public final class HerobrinePlugin extends JavaPlugin implements Listener, TabEx
     }
 
     @Override public boolean onCommand(CommandSender s, Command c, String l, String[] args) {
-        if (args.length == 0) { s.sendMessage("/herobrine <spawn <player>|reload|toggle|status|clear>"); return true; }
-        switch (args[0].toLowerCase(Locale.ROOT)) {
+        String sub = args.length == 0 ? "" : args[0].toLowerCase(Locale.ROOT);
+        if (sub.equals("optout")) {
+            if (!(s instanceof Player p)) { s.sendMessage("Players only."); return true; }
+            if (!p.hasPermission("herobrine.optout")) { s.sendMessage("No permission."); return true; }
+            boolean out = !optedOut.remove(p.getUniqueId());
+            if (out) { optedOut.add(p.getUniqueId()); Apparition a = active.get(p.getUniqueId()); if (a != null) remove(a, false); }
+            saveOptout();
+            p.sendMessage(out ? "Herobrine leaves you alone now. Run /herobrine optout again to opt back in." : "You opted back in. Watch your back.");
+            return true;
+        }
+        if (!s.hasPermission("herobrine.admin")) { s.sendMessage("Usage: /herobrine optout"); return true; }
+        if (args.length == 0) { s.sendMessage("/herobrine <spawn|spawnat|reload|toggle|status|clear|sound|event|traces|optout>"); return true; }
+        switch (sub) {
             case "spawn" -> {
                 if (args.length < 2) { s.sendMessage("Usage: /herobrine spawn <player>"); return true; }
                 Player p = Bukkit.getPlayerExact(args[1]);
@@ -270,8 +406,55 @@ public final class HerobrinePlugin extends JavaPlugin implements Listener, TabEx
                 getConfig().set("enabled", on); saveConfig();
                 s.sendMessage("Herobrine random appearances: " + (on ? "ON" : "OFF"));
             }
-            case "status" -> s.sendMessage("enabled=" + getConfig().getBoolean("enabled") + " active=" + active.size()
+            case "status" -> s.sendMessage("enabled=" + getConfig().getBoolean("enabled") + " halloween=" + halloween() + " event=" + eventActive()
+                    + " multiplier=" + globalMultiplier() + " traces=" + getConfig().getBoolean("traces.enabled", false) + "(" + traces.all().size() + ")"
+                    + " optedOut=" + optedOut.size() + " active=" + active.size()
                     + (active.isEmpty() ? "" : " " + active.values().stream().map(a -> Optional.ofNullable(Bukkit.getPlayer(a.target)).map(Player::getName).orElse("?")).toList()));
+            case "sound" -> { // sound <player> [footsteps|door|cave|fake-join]
+                if (args.length < 2) { s.sendMessage("Usage: /herobrine sound <player> [" + String.join("|", SOUND_TYPES) + "]"); return true; }
+                Player p = Bukkit.getPlayerExact(args[1]);
+                if (p == null) { s.sendMessage("Player not online: " + args[1]); return true; }
+                String err = playSound(p, args.length > 2 ? args[2].toLowerCase(Locale.ROOT) : null);
+                s.sendMessage(err == null ? "Played for " + p.getName() + "." : "Failed: " + err);
+            }
+            case "event" -> { // event [start [minutes]|stop|status]
+                String a = args.length > 1 ? args[1].toLowerCase(Locale.ROOT) : "start";
+                switch (a) {
+                    case "stop" -> { stopEvent(true); s.sendMessage("Herobrine event stopped."); }
+                    case "status" -> s.sendMessage(eventActive() ? "Event active, " + ((eventEndsAt - System.currentTimeMillis()) / 60000 + 1) + " min left." : "No event active.");
+                    default -> {
+                        int min = getConfig().getInt("event.duration-minutes", 60);
+                        if (args.length > 2) try { min = Math.max(1, Integer.parseInt(args[2])); } catch (NumberFormatException e) { s.sendMessage("Bad minutes."); return true; }
+                        startEvent(min);
+                        s.sendMessage("Herobrine event night started for " + min + " minutes (multiplier x" + globalMultiplier() + ").");
+                    }
+                }
+            }
+            case "traces" -> { // traces list|undo <id>|undoall|place <player> [type]
+                String a = args.length > 1 ? args[1].toLowerCase(Locale.ROOT) : "list";
+                switch (a) {
+                    case "list" -> {
+                        if (traces.all().isEmpty()) s.sendMessage("No traces (traces.enabled=" + getConfig().getBoolean("traces.enabled", false) + ").");
+                        for (Traces.Trace t : traces.all()) s.sendMessage("#" + t.id + " " + t.type + " " + t.world + " " + t.x + " " + t.y + " " + t.z + " (" + t.blocks.size() + " blocks)");
+                    }
+                    case "undo" -> {
+                        if (args.length < 3) { s.sendMessage("Usage: /herobrine traces undo <id>"); return true; }
+                        try { s.sendMessage(traces.undo(Integer.parseInt(args[2].replace("#", ""))) ? "Trace restored." : "No such trace (or world not loaded)."); }
+                        catch (NumberFormatException e) { s.sendMessage("Bad id."); }
+                    }
+                    case "undoall" -> s.sendMessage("Restored " + traces.undoAll() + " traces.");
+                    case "place" -> { // admin test: ignores traces.enabled and the time gap, but keeps all safety checks
+                        if (args.length < 3) { s.sendMessage("Usage: /herobrine traces place <player> [" + String.join("|", Traces.TYPES) + "]"); return true; }
+                        Player p = Bukkit.getPlayerExact(args[2]);
+                        if (p == null) { s.sendMessage("Player not online: " + args[2]); return true; }
+                        String type = args.length > 3 ? args[3].toLowerCase(Locale.ROOT) : Traces.TYPES.get(ThreadLocalRandom.current().nextInt(Traces.TYPES.size()));
+                        if (!Traces.TYPES.contains(type)) { s.sendMessage("Unknown type."); return true; }
+                        String err = traces.tryPlace(p, type);
+                        s.sendMessage(err == null ? "Trace placed, see /herobrine traces list." : "Failed: " + err);
+                    }
+                    default -> s.sendMessage("Usage: /herobrine traces list|undo <id>|undoall|place <player> [type]");
+                }
+            }
             case "clear" -> { for (Apparition a : new ArrayList<>(active.values())) remove(a, false); s.sendMessage("Cleared."); }
             default -> s.sendMessage("Unknown subcommand.");
         }
@@ -279,7 +462,17 @@ public final class HerobrinePlugin extends JavaPlugin implements Listener, TabEx
     }
 
     @Override public List<String> onTabComplete(CommandSender s, Command c, String l, String[] args) {
-        if (args.length == 1) return List.of("spawn", "spawnat", "reload", "toggle", "status", "clear");
+        boolean admin = s.hasPermission("herobrine.admin");
+        if (args.length == 1) return (admin ? List.of("spawn", "spawnat", "reload", "toggle", "status", "clear", "sound", "event", "traces", "optout") : List.of("optout"))
+                .stream().filter(x -> x.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
+        if (!admin) return List.of();
+        if (args.length == 2 && args[0].equalsIgnoreCase("sound")) return Bukkit.getOnlinePlayers().stream().map(Player::getName).toList();
+        if (args.length == 3 && args[0].equalsIgnoreCase("sound")) return SOUND_TYPES;
+        if (args.length == 2 && args[0].equalsIgnoreCase("event")) return List.of("start", "stop", "status");
+        if (args.length == 2 && args[0].equalsIgnoreCase("traces")) return List.of("list", "undo", "undoall", "place");
+        if (args.length == 3 && args[0].equalsIgnoreCase("traces") && args[1].equalsIgnoreCase("undo")) return traces.all().stream().map(t -> String.valueOf(t.id)).toList();
+        if (args.length == 3 && args[0].equalsIgnoreCase("traces") && args[1].equalsIgnoreCase("place")) return Bukkit.getOnlinePlayers().stream().map(Player::getName).toList();
+        if (args.length == 4 && args[0].equalsIgnoreCase("traces") && args[1].equalsIgnoreCase("place")) return Traces.TYPES;
         if (args.length == 2 && (args[0].equalsIgnoreCase("spawn") || args[0].equalsIgnoreCase("spawnat"))) return Bukkit.getOnlinePlayers().stream().map(Player::getName).toList();
         return List.of();
     }
